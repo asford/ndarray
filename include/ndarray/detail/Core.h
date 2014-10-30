@@ -18,6 +18,7 @@
  */
 
 #include <boost/intrusive_ptr.hpp>
+#include <boost/atomic.hpp>
 #include <boost/mpl/int.hpp>
 #include "ndarray/Vector.h"
 #include "ndarray/Manager.h"
@@ -174,14 +175,6 @@ public:
     typedef boost::intrusive_ptr<Core> Ptr;
     typedef boost::intrusive_ptr<Core const> ConstPtr;
 
-    friend inline void intrusive_ptr_add_ref(Core const * core) {
-        ++core->_rc;
-    }
- 
-    friend inline void intrusive_ptr_release(Core const * core) {
-        if ((--core->_rc)==0) delete core;
-    }
-
     Ptr copy() const { return Ptr(new Core(*this)); }
 
     int getSize() const { return 1; }
@@ -209,10 +202,10 @@ public:
     int getNumElements() const { return 1; }
 
     /// @brief Return the reference count (for debugging purposes).
-    int getRC() const { return _rc; }
+    int getRC() const { return refcount_.load( boost::memory_order_acquire ); }
 
     /// @brief Return true if the Core and Manager reference counts are 1 and the manager is unique.
-    bool isUnique() const { return (_rc == 1) && (_manager->getRC() == 1) && _manager->isUnique(); }
+    bool isUnique() const { return (getRC() == 1) && (_manager->getRC() == 1) && _manager->isUnique(); }
 
 protected:
 
@@ -223,30 +216,42 @@ protected:
         Vector<int,M> const & shape,
         Vector<int,M> const & strides, 
         Manager::Ptr const & manager
-    ) : _manager(manager), _rc(1) {}
+    ) : _manager(manager), refcount_(1) {}
 
     template <int M>
     Core(
         Vector<int,M> const & shape,
         Manager::Ptr const & manager
-    ) : _manager(manager), _rc(1) {}
+    ) : _manager(manager), refcount_(1) {}
 
     template <int M>
     Core(
         Vector<int,M> const & shape,
         int stride,
         Manager::Ptr const & manager
-    ) : _manager(manager), _rc(1) {}
+    ) : _manager(manager), refcount_(1) {}
 
     Core(
         Manager::Ptr const & manager
-    ) : _manager(manager), _rc(1) {}
+    ) : _manager(manager), refcount_(1) {}
 
-    Core(Core const & other) : _manager(other._manager), _rc(1) {}
+    Core(Core const & other) : _manager(other._manager), refcount_(1) {}
 
 private:
     Manager::Ptr _manager;
-    mutable int _rc;
+
+    mutable boost::atomic<int> refcount_;
+    friend void intrusive_ptr_add_ref(const Core<0> * x)
+    {
+      x->refcount_.fetch_add(1, boost::memory_order_relaxed);
+    }
+    friend void intrusive_ptr_release(const Core<0> * x)
+    {
+      if (x->refcount_.fetch_sub(1, boost::memory_order_release) == 1) {
+        boost::atomic_thread_fence(boost::memory_order_acquire);
+        delete x;
+      }
+    }
 };
 
 

@@ -20,6 +20,7 @@
 #include "ndarray_fwd.h"
 #include <boost/noncopyable.hpp>
 #include <boost/intrusive_ptr.hpp>
+#include <boost/atomic.hpp>
 #include <boost/scoped_array.hpp>
 
 namespace ndarray {
@@ -29,15 +30,7 @@ public:
 
     typedef boost::intrusive_ptr<Manager> Ptr;
 
-    friend inline void intrusive_ptr_add_ref(Manager const * manager) {
-        ++manager->_rc;
-    }
- 
-    friend inline void intrusive_ptr_release(Manager const * manager) {
-        if ((--manager->_rc)==0) delete manager;
-    }
-
-    int getRC() const { return _rc; }
+    int getRC() const { return refcount_.load( boost::memory_order_acquire ); }
 
     virtual bool isUnique() const { return false; }
 
@@ -45,10 +38,23 @@ protected:
 
     virtual ~Manager() {}
 
-    explicit Manager() : _rc(0) {}
+    explicit Manager() : refcount_(0) {}
 
 private:
-    mutable int _rc;
+    mutable boost::atomic<int> refcount_;
+
+    friend void intrusive_ptr_add_ref(const Manager * x)
+    {
+      x->refcount_.fetch_add(1, boost::memory_order_relaxed);
+    }
+
+    friend void intrusive_ptr_release(const Manager * x)
+    {
+      if (x->refcount_.fetch_sub(1, boost::memory_order_release) == 1) {
+        boost::atomic_thread_fence(boost::memory_order_acquire);
+        delete x;
+      }
+    }
 };
 
 template <typename T>
